@@ -1,0 +1,44 @@
+global:
+  defaultStorageClass: "standard-rwo"
+extraDeploy:
+  - apiVersion: rabbitmq.com/v1beta1
+    kind: RabbitmqCluster
+    metadata:
+      name: rabbitmqcluster
+    spec:
+      replicas: 3
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: 500m
+          memory: 1Gi
+      rabbitmq:
+        additionalPlugins:
+          - rabbitmq_federation
+          - rabbitmq_federation_management
+        additionalConfig: |
+          log.console = true
+          log.console.level = debug
+          channel_max = 1700
+          default_user_tags.administrator = true
+          default_user=admin
+          default_pass=admin
+      persistence:
+        storageClassName: "standard-rwo"
+        storage: "10Gi"
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                  - rabbitmqcluster
+            topologyKey: kubernetes.io/hostname
+clusterOperator:
+  resourcesPreset: "nano"
+msgTopologyOperator:
+  resourcesPreset: "nano"

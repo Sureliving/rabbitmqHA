@@ -1,0 +1,57 @@
+global:
+  defaultStorageClass: "standard-rwo"
+extraDeploy:
+  - apiVersion: rabbitmq.com/v1beta1
+    kind: RabbitmqCluster
+    metadata:
+      name: rabbitmqcluster-we1
+    spec:
+      replicas: 3
+      override:
+        statefulSet:
+          spec:
+            template:
+              spec:
+                containers:
+                - name: rabbitmq
+                  volumeMounts:
+                  - mountPath: /etc/rabbitmq/definitions.json
+                    subPath: definitions.json # Name of the ConfigMap field containing definitions
+                    name: definitions
+                volumes:
+                - name: definitions
+                  configMap:
+                    name: definitions # Name of the ConfigMap which contains definitions you wish to import
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: 500m
+          memory: 1Gi
+      rabbitmq:
+        additionalPlugins:
+          - rabbitmq_federation
+          - rabbitmq_federation_management
+        additionalConfig: |
+          log.console = true
+          log.console.level = debug
+          channel_max = 1700
+          load_definitions = /etc/rabbitmq/definitions.json
+      persistence:
+        storageClassName: "standard-rwo"
+        storage: "10Gi"
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                  - rabbitmqcluster-we1
+            topologyKey: kubernetes.io/hostname
+clusterOperator:
+  resourcesPreset: "nano"
+msgTopologyOperator:
+  resourcesPreset: "nano"

@@ -1,0 +1,202 @@
+#!/bin/bash
+#
+###links
+# istio certs prepareing - https://istio.io/latest/docs/setup/install/multicluster/before-you-begin/
+# istio DNS proxy (resolving for DNS from another cluster in mesh) - https://istio.io/latest/docs/ops/configuration/traffic-management/dns-proxy/
+# multicluster with istio - https://istio.io/latest/docs/setup/install/multicluster/multi-primary/
+# rabbitmq federation example - https://www.cloudamqp.com/blog/rabbitmq-federation.html
+#
+### Project Overview
+#
+#1. **Choosing Google Cloud Platform**
+#   The platform was selected based on its use within the company, and it also
+#   provides an opportunity to gain practical experience working with Google Cloud.
+#
+#2. **Selected Cloud Architecture**
+#   A single network was implemented with subnets distributed across different
+#   zones within the same region. Two Kubernetes clusters (Cluster 1 and Cluster
+#   2) are deployed in these zones. This architecture simplifies cross-cluster
+#   communication and federated exchanges between RabbitMQ clusters. The cloud
+#   infrastructure deployment is automated using Terraform.
+#
+#3. **Using Istio for Dynamic DNS Resolution**
+#   Istio was chosen to handle cross-cluster communication and queue federation
+#   due to its widespread use in the industry as a service mesh solution.
+#
+#4. **Multicluster Solution with Shared Control Planes for Istio**
+#   The architecture uses a multicluster setup with a shared primary control
+#   plane for Istio across both clusters. This allows DNS proxying between
+#   clusters, ensuring services operate correctly.
+#
+#5. **RabbitMQ Setup for High Availability**
+#   - The RabbitMQ operator was deployed in both Kubernetes clusters along with
+#     a RabbitMQ service cluster consisting of three nodes.
+#   - Quorum queues were set up in both clusters to ensure distributed data
+#     storage across nodes.
+#   - Federation policies for RabbitMQ exchanges were configured.
+#   - Federated upstream queues were created in both clusters, with each pointing
+#     to the target server via a URI.
+#   - Message exchanges within and between the RabbitMQ clusters were implemented
+#     based on interactions between local quorum and federated upstream queues.
+#
+#### Challenges Encountered:
+#
+#1. **Cluster Downtime Emulation**
+#   When attempting to emulate cluster downtime in Google Cloud, an issue arose
+#   due to the **Istio Pod Disruption Budgets** settings, which can delay
+#   cluster shutdown by up to an hour. Additionally, since both clusters are in
+#   the same network, it was not possible to fully isolate subnets to test
+#   network failure scenarios effectively.
+#
+#2. **RabbitMQ Instability with PVC (Persistent Volume Claims)**
+#   Frequent issues were observed where RabbitMQ nodes would exit the cluster
+#   without a clear cause. This was due to storage interaction problems,
+#   requiring manual detachment and reattachment of volumes.
+#
+#### Steps for Improving Reliability:
+#
+#1. **Extend Test Applications**
+#   Currently, functionality is being manually tested through the RabbitMQ
+#   graphical interface. Test applications need to be extended to automatically
+#   verify the performance of the federated exchange setup.
+#
+#2. **Automate Cluster Deployment**
+#   The Kubernetes cluster deployment process should be automated, including the
+#   use of exported RabbitMQ configuration definition files.
+#
+#3. **Consider a Separate Storage Class for RabbitMQ**
+#   It is necessary to explore the option of using a dedicated storage class for
+#   RabbitMQ instead of the default, as this may improve reliability and address
+#   PVC-related issues.
+
+#1. Run terraform project
+cd terraform
+terraform init
+terraform apply -var="<YOUR_GOOGLE_CLOUD_PROJECT_ID>"
+
+#2. Get local contexts and export vars with it names
+gcloud container clusters get-credentials first-cluster --region europe-west1 --project ultimate-rig-438812-u4
+gcloud container clusters get-credentials second-cluster --region europe-west2 --project ultimate-rig-438812-u4
+
+export CTX_CLUSTER1=gke_ultimate-rig-438812-u4_europe-west1_first-cluster
+export CTX_CLUSTER2=gke_ultimate-rig-438812-u4_europe-west2_second-cluster
+
+#3. Prepare k8s crd gateways for Istio
+kubectl --context="${CTX_CLUSTER1}" get crd gateways.gateway.networking.k8s.io &> /dev/null || \
+  { kubectl --context="${CTX_CLUSTER1}" apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml; }
+
+kubectl --context="${CTX_CLUSTER2}" get crd gateways.gateway.networking.k8s.io &> /dev/null || \
+  { kubectl --context="${CTX_CLUSTER2}" apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml; }
+
+#4. Install istio cli locally
+cd ../
+curl -L https://istio.io/downloadIstio | sh -
+cd istio-1.23.2
+export PATH=$PWD/bin:$PATH
+
+#5. Create istio ns
+kubectl create namespace istio-system\
+    --context="${CTX_CLUSTER1}"
+kubectl create namespace istio-system\
+    --context="${CTX_CLUSTER2}"
+
+#6. Create and apply istio certs
+mkdir -p certs
+
+pushd certs
+
+make -f ../tools/certs/Makefile.selfsigned.mk root-ca
+make -f ../tools/certs/Makefile.selfsigned.mk cluster1-cacerts
+make -f ../tools/certs/Makefile.selfsigned.mk cluster2-cacerts
+popd
+
+kubectl create secret generic cacerts -n istio-system \
+    --context="${CTX_CLUSTER1}"\
+    --from-file=certs/cluster1/ca-cert.pem \
+    --from-file=certs/cluster1/ca-key.pem \
+    --from-file=certs/cluster1/root-cert.pem \
+    --from-file=certs/cluster1/cert-chain.pem
+
+kubectl create secret generic cacerts -n istio-system \
+    --context="${CTX_CLUSTER2}"\
+    --from-file=certs/cluster2/ca-cert.pem \
+    --from-file=certs/cluster2/ca-key.pem \
+    --from-file=certs/cluster2/root-cert.pem \
+    --from-file=certs/cluster2/cert-chain.pem
+
+
+
+#7. Deploy istio in clusters
+cat <<EOF > cluster1.yaml
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+spec:
+  meshConfig:
+    defaultConfig:
+      proxyMetadata:
+        # Enable basic DNS proxying
+        ISTIO_META_DNS_CAPTURE: "true"
+        # Enable automatic address allocation, optional
+        ISTIO_META_DNS_AUTO_ALLOCATE: "true"
+  values:
+    global:
+      meshID: mesh1
+      multiCluster:
+        clusterName: cluster1
+      network: network1
+EOF
+
+istioctl install --context="${CTX_CLUSTER1}" -f cluster1.yaml
+
+cat <<EOF > cluster2.yaml
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+spec:
+  meshConfig:
+    defaultConfig:
+      proxyMetadata:
+        # Enable basic DNS proxying
+        ISTIO_META_DNS_CAPTURE: "true"
+        # Enable automatic address allocation, optional
+        ISTIO_META_DNS_AUTO_ALLOCATE: "true"
+  values:
+    global:
+      meshID: mesh1
+      multiCluster:
+        clusterName: cluster2
+      network: network1
+EOF
+
+istioctl install --context="${CTX_CLUSTER2}" -f cluster2.yaml
+
+
+#8. introduce clusters via istio and kubeconfigs
+istioctl create-remote-secret \
+    --context="${CTX_CLUSTER1}" \
+    --name=cluster1 | \
+    kubectl apply -f - --context="${CTX_CLUSTER2}"
+
+istioctl create-remote-secret \
+    --context="${CTX_CLUSTER2}" \
+    --name=cluster2 | \
+    kubectl apply -f - --context="${CTX_CLUSTER1}"
+
+#9. Prepare ns for RebbitMQ
+kubectl create namespace rabbitmq \
+    --context="${CTX_CLUSTER1}"
+kubectl create namespace rabbitmq \
+    --context="${CTX_CLUSTER2}"
+
+#8. introduce RabbitMQ ns with service mesh
+kubectl label --context="${CTX_CLUSTER1}" namespace rabbitmq \
+    istio-injection=enabled
+kubectl label --context="${CTX_CLUSTER2}" namespace rabbitmq \
+    istio-injection=enabled
+
+#9. Deploy RebbitMQ operators with clustering RebbitMQ
+cd ../
+kubectl --context "${CTX_CLUSTER1}" create configmap definitions --from-file='definitions.json=helm/rabbitmq-operator/definitions-cluster-we1.json' -n rabbitmq
+helm install rabbitmq-operator bitnami/rabbitmq-cluster-operator -n rabbitmq --kube-context "${CTX_CLUSTER1}" -f helm/rabbitmq-operator/values1.yaml --version 4.3.25
+
+kubectl --context "${CTX_CLUSTER2}" create configmap definitions --from-file='definitions.json=helm/rabbitmq-operator/definitions-cluster-we2.json' -n rabbitmq
+helm install rabbitmq-operator bitnami/rabbitmq-cluster-operator -n rabbitmq --kube-context "${CTX_CLUSTER2}" -f helm/rabbitmq-operator/values2.yaml --version 4.3.25
