@@ -1,5 +1,29 @@
-#!/bin/bash
+### Task:
+# Develop two microservices in any preferred programming language. The first
+# microservice will push even numbers sequentially from 2 to 10,000 into
+# RabbitMQ every second (e.g., 1 second: 2, 2 seconds: 4, 3 seconds: 6, etc.).
+# The second microservice will perform the same function, but for odd numbers.
+# The queue should be named `testhighavailability`.
 #
+#Deploy two Kubernetes clusters (one and two) in any cloud environment using any
+# convenient method. Within these clusters, deploy RabbitMQ configured for High
+# Availability.
+#
+#In the first cluster, run the microservice that pushes even numbers, and in the
+# second cluster, run the microservice for odd numbers. At this stage, we expect
+# both even and odd numbers to be present in the `testhighavailability` queue.
+#
+#### Verification:
+#1. Shut down the `k8s` cluster one. In the `k8s` cluster two, we expect to see
+# only odd numbers appearing in the `testhighavailability` queue.
+#2. Start the `k8s` cluster one again. We expect that both even and odd numbers
+# will start appearing again in the `testhighavailability` queue.
+#
+#**IMPORTANT:** When the `k8s` cluster one is shut down, RabbitMQ should not
+# lose any old data from the queue.
+
+
+
 ###links
 # istio certs prepareing - https://istio.io/latest/docs/setup/install/multicluster/before-you-begin/
 # istio DNS proxy (resolving for DNS from another cluster in mesh) - https://istio.io/latest/docs/ops/configuration/traffic-management/dns-proxy/
