@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
       - name: even-numbers
-        image: europe-docker.pkg.dev/ultimate-rig-438812-u4/registry/even-app:0.04
+        image: <YOUR_IMAGE>
         env:
         - name: RABBITMQ_URL
           value: "amqp://admin:admin@rabbitmqcluster-we2.rabbitmq.svc.cluster.local:5672"
